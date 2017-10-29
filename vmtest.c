@@ -1,8 +1,10 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <errno.h>
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <sys/mman.h>
 #include <fcntl.h>
 
 
@@ -45,6 +47,27 @@ write_ro_data_umod(void)
     *s = 0x00;
 }
 
+static void
+anno_mmp(void)
+{
+    int ret;
+    size_t mlen = 0x100000;
+    size_t half_mlen = mlen / 2; 
+    char *m = mmap(NULL, mlen, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (!m)
+        handle_error("malloc");
+
+    printf("mmap(): val=0x%lx\n", (unsigned long)m);
+
+    memset(m, 0, mlen); 
+
+    ret = munmap(m, half_mlen);      
+    if (ret)
+        handle_error("munmap");
+
+    m[half_mlen] = 0;
+    m[mlen - 1]  = 0;
+}
 
 typedef void (*crun_func_t)(void);
 
@@ -64,6 +87,10 @@ struct {
     { .id = 2, 
       .help = "write ro data",
       .func = write_ro_data_umod,
+    },
+    { .id = 3, 
+      .help = "anon mapping(page->index)",
+      .func = anno_mmp,
     },
 };
 
