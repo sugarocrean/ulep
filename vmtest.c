@@ -6,6 +6,7 @@
 #include <sys/stat.h>
 #include <sys/mman.h>
 #include <fcntl.h>
+#include <signal.h> 
 
 
 #define ARRAY_SIZE(x) (sizeof(x) / sizeof((x)[0]))
@@ -69,6 +70,54 @@ anno_mmp(void)
     m[mlen - 1]  = 0;
 }
 
+static void
+interrupt(int signal)  
+{ 
+    printf("interrupt occur: %d\n", signal); 
+} 
+
+static void
+signal_test(void)
+{
+    if (signal(SIGINT, interrupt) == SIG_ERR)
+        handle_error("signal");
+
+    if (raise(SIGINT) != 0)
+        handle_error("raise");
+}
+
+static void
+hpage_test(void)
+{
+    int fd = open("/dev/hugepages/test", O_CREAT | O_RDWR, 0600); 
+    if (fd < 0)
+        handle_error("open");
+
+    size_t hugepage_sz = 2 * (1ul << 21); /* 2 huge pages */
+    char *vma = mmap(NULL, hugepage_sz, PROT_READ | PROT_WRITE, 
+                     MAP_SHARED, fd, 0);
+                     //MAP_SHARED | MAP_POPULATE, fd, 0);
+    if (vma == MAP_FAILED) {
+        close(fd);
+        handle_error("mmap()");
+    }
+
+    memset(vma, 0, hugepage_sz);
+}
+
+static void
+malloc_bigmem_test(void)
+{
+    size_t msize = 1ul << 30; 
+    char *m = malloc(msize);
+    if (!m)
+        handle_error("malloc()");
+
+    memset(m, 0, msize);
+    //free(m);
+    pause();
+}
+
 typedef void (*crun_func_t)(void);
 
 struct {
@@ -91,6 +140,18 @@ struct {
     { .id = 3, 
       .help = "anon mapping(page->index)",
       .func = anno_mmp,
+    },
+    { .id = 4, 
+      .help = "huge page test",
+      .func = hpage_test,
+    },
+    { .id = 5, 
+      .help = "signal test",
+      .func = signal_test,
+    },
+    { .id = 6, 
+      .help = "big malloc test",
+      .func = malloc_bigmem_test,
     },
 };
 
