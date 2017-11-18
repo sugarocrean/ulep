@@ -15,7 +15,7 @@
     do { perror(msg); exit(EXIT_FAILURE); } while (0)
 
 static void
-access_invalid_va_kmod(void)
+access_invalid_va_kmod(int argc, char *argv[])
 {
     char *m = malloc(0x100000); 
     if (!m)
@@ -29,7 +29,7 @@ access_invalid_va_kmod(void)
 }
 
 static void
-access_non_mapped_va_kmod(void)
+access_non_mapped_va_kmod(int argc, char *argv[])
 {
     char *m = malloc(0x100000); 
     if (!m)
@@ -42,20 +42,20 @@ access_non_mapped_va_kmod(void)
 }
 
 static void
-write_ro_data_umod(void)
+write_ro_data_umod(int argc, char *argv[])
 {
     char *s = "abc";
     *s = 0x00;
 }
 
 static void
-anno_mmp(void)
+anno_mmp(int argc, char *argv[])
 {
     int ret;
     size_t mlen = 0x100000;
     size_t half_mlen = mlen / 2; 
     char *m = mmap(NULL, mlen, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-    if (!m)
+    if (m == MAP_FAILED)
         handle_error("malloc");
 
     printf("mmap(): val=0x%lx\n", (unsigned long)m);
@@ -77,7 +77,7 @@ interrupt(int signal)
 } 
 
 static void
-signal_test(void)
+signal_test(int argc, char *argv[])
 {
     if (signal(SIGINT, interrupt) == SIG_ERR)
         handle_error("signal");
@@ -87,7 +87,7 @@ signal_test(void)
 }
 
 static void
-hpage_test(void)
+hpage_test(int argc, char *argv[])
 {
     int fd = open("/dev/hugepages/test", O_CREAT | O_RDWR, 0600); 
     if (fd < 0)
@@ -106,19 +106,26 @@ hpage_test(void)
 }
 
 static void
-malloc_bigmem_test(void)
+malloc_bigmem_test(int argc, char *argv[])
 {
-    size_t msize = 1ul << 30; 
-    char *m = malloc(msize);
-    if (!m)
+    size_t msize;
+
+    msize = 1ul << 30; 
+    if (argc > 0)
+        msize = 1ul << atoi(argv[0]);
+
+    printf("mmap size 0x%lx\n", msize);
+    char *m = mmap(NULL, msize, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (m == MAP_FAILED)
         handle_error("malloc()");
 
+    printf("mmap(): %p, start to memset()\n", m);
     memset(m, 0, msize);
-    //free(m);
+    printf("memset() is done\n");
     pause();
 }
 
-typedef void (*crun_func_t)(void);
+typedef void (*crun_func_t)(int argc, char *argv[]);
 
 struct {
     int id;
@@ -172,20 +179,24 @@ main(int argc, char *argv[])
     int i;
     int cid;
 
-    if (argc != 2) {
+    if (argc < 2) {
         usage();
         exit(-1);
     }  
 
     cid = atoi(argv[1]);
 
+    argc -= 2;
+    argv += 2;
+
     for (i = 0; i < ARRAY_SIZE(vm_hack_cases); i++)
         if (vm_hack_cases[i].id == cid) {
-            vm_hack_cases[i].func();
+            vm_hack_cases[i].func(argc, argv);
             break;
         }
 
     if (i >= ARRAY_SIZE(vm_hack_cases))
         printf("invalid case id\n");
-    return 0;
+
+    exit(EXIT_SUCCESS);
 }
