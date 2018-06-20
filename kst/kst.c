@@ -47,7 +47,7 @@ module_param(dbg_en, int, 1);
 #define dbg_log printk
 
 
-static raw_spinlock_t kst_lock;
+static rwlock_t kst_lock;
 
 struct kst_meter {
     int valid;
@@ -62,7 +62,7 @@ static struct kst_meter kst_meters[KST_ENTRY_NUM];
 
 static int kst_meter_init(void)
 {
-    raw_spin_lock_init(&kst_lock);
+    rwlock_init(&kst_lock);
     return 0;
 }
 
@@ -73,14 +73,14 @@ static inline struct kst_meter *kst_meter_lookup(pid_t pid)
     unsigned long flags;
     struct kst_meter *meter = NULL;
 
-    raw_spin_lock_irqsave(&kst_lock, flags);
+    read_lock_irqsave(&kst_lock, flags);
     for (i = 0; i < KST_ENTRY_NUM; i++) {
         if (kst_meters[i].valid && kst_meters[i].pid == pid) {
             meter = &kst_meters[i];
             break;
         }
     }
-    raw_spin_unlock_irqrestore(&kst_lock, flags);
+    read_unlock_irqrestore(&kst_lock, flags);
 
     return meter;
 }
@@ -91,7 +91,7 @@ static inline struct kst_meter *kst_meter_create(pid_t pid)
     unsigned long flags;
     struct kst_meter *meter = NULL;
 
-    raw_spin_lock_irqsave(&kst_lock, flags);
+    write_lock_irqsave(&kst_lock, flags);
     for (i = 0; i < KST_ENTRY_NUM; i++) {
         if (!kst_meters[i].valid) {
             memset(&kst_meters[i], 0, sizeof(kst_meters[i]));
@@ -101,7 +101,7 @@ static inline struct kst_meter *kst_meter_create(pid_t pid)
             break;
         }
     }
-    raw_spin_unlock_irqrestore(&kst_lock, flags);
+    write_unlock_irqrestore(&kst_lock, flags);
 
     return meter;
 }
@@ -112,14 +112,14 @@ static inline int kst_meter_remove(pid_t pid)
     int i;
     unsigned long flags;
 
-    raw_spin_lock_irqsave(&kst_lock, flags);
+    write_lock_irqsave(&kst_lock, flags);
     for (i = 0; i < KST_ENTRY_NUM; i++) {
         if (kst_meters[i].valid && kst_meters[i].pid == pid) {
             memset(&kst_meters[i], 0, sizeof(kst_meters[i]));
             break;
         }
     }
-    raw_spin_unlock_irqrestore(&kst_lock, flags);
+    write_unlock_irqrestore(&kst_lock, flags);
 
     return 0;
 }
@@ -135,12 +135,12 @@ static void jp_entry_comm_handler(const char *caller, struct pt_regs *regs)
 
             if (kst) {
                 kst->u2k_time = ktime_get();
-                dbg_log("%s: from user mode, now is %lu\n", 
-                        caller, ktime_to_us(kst->u2k_time));
+                dbg_log("%s: pid %d, from user mode, now is %lu\n", 
+                        caller, current->pid, ktime_to_us(kst->u2k_time));
             }
         } else {
-           printk(KERN_NOTICE, "%s: irq occures in kernel mode", caller);
-           dump_stack();
+           printk(KERN_INFO, "===================== %s: irq occures in kernel mode\n", caller);
+           //dump_stack();
         }
     }
 }
@@ -153,14 +153,17 @@ static void kp_comm_handler_post(struct kprobe *p,
         if (kst) {
             ktime_t now = ktime_get();
             ktime_t delta = ktime_sub(now, kst->u2k_time);
-            if (ktime_compare(delta, kst->max_time) > 0)
+            if (ktime_compare(delta, kst->max_time) > 0) {
                 kst->max_time = delta;
-            dbg_log("%s: pid is %d, now is %lu, diff is %lu, max is %lu\n",
-                    __FUNCTION__,
-                    current->pid,
-                    ktime_to_us(now),
-                    ktime_to_us(delta),
-                    ktime_to_us(kst->max_time));
+                dbg_log("%s: pid is %d, now is %lu, diff is %lu, max is updated to %lu\n",
+                        __FUNCTION__,
+                        current->pid,
+                        ktime_to_us(now),
+                        ktime_to_us(delta),
+                        ktime_to_us(kst->max_time));
+                dump_stack();
+                dbg_log("========================================================\n\n");
+            }
         }
     }
 }
@@ -176,9 +179,7 @@ __visible unsigned int __irq_entry jsmp_apic_timer_interrupt(struct pt_regs *reg
 
 static struct jprobe jprobe_smp_apic_timer_interrupt = {
     .entry = jsmp_apic_timer_interrupt,
-    .kp = {
-        .symbol_name = "smp_apic_timer_interrupt",
-    },
+    .kp = { .symbol_name = "smp_apic_timer_interrupt", },
 };
 
 static struct kprobe kp_smp_apic_timer_interrupt = {
@@ -225,8 +226,7 @@ static struct jprobe jprobe_do_exit = {
 };
 
 
-//dotraplinkage void notrace
-void notrace
+static dotraplinkage void notrace
 jdo_page_fault(struct pt_regs *regs, unsigned long error_code)
 {
     jp_entry_comm_handler(__FUNCTION__, regs);
@@ -236,9 +236,7 @@ jdo_page_fault(struct pt_regs *regs, unsigned long error_code)
 
 static struct jprobe jprobe_do_page_fault = {
     .entry = jdo_page_fault,
-    .kp = {
-        .symbol_name = "do_page_fault",
-    },
+    .kp = { .symbol_name = "do_page_fault", },
 };
 
 static struct jprobe *jprobe_set[] = {
@@ -250,7 +248,7 @@ static struct jprobe *jprobe_set[] = {
 
 static struct kprobe kp_do_page_fault = {
     .post_handler = kp_comm_handler_post,
-    .symbol_name = "__do_page_fault",
+    .symbol_name = "do_page_fault",
 };
 
 static struct kprobe *kprobe_set[] = {
@@ -264,15 +262,15 @@ static int kst_proc_show(struct seq_file *m, void *v)
     int i;
     unsigned long flags;
 
-    raw_spin_lock_irqsave(&kst_lock, flags);
+    read_lock_irqsave(&kst_lock, flags);
     for (i = 0; i < KST_ENTRY_NUM; i++) {
         struct kst_meter *meter = &kst_meters[i];
         if (meter->valid) {
-            seq_printf(m, "pid=%d,max_latency=%luns\n",
+            seq_printf(m, "pid=%d,max_latency=%luus\n",
                           meter->pid, ktime_to_us(meter->max_time));
         }
     }
-    raw_spin_unlock_irqrestore(&kst_lock, flags);
+    read_unlock_irqrestore(&kst_lock, flags);
 
     return 0;
 }
